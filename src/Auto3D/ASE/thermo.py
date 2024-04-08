@@ -367,9 +367,9 @@ def do_mol_thermo_xyz(species, coord, charge,
     
     #Updating ASE atoms coordinates
     new_coord = atoms.get_positions()
-    return new_coord
+    return (new_coord, result)
 
-def calc_thermo_xyz(species_coords_list, model_name: str, outpath: str, get_mol_idx_t=None, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+def calc_thermo_xyz(species_coords_list, model_name: str, outpath: str, temperature, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
     """
     ASE interface for calculation thermo properties using ANI2x, ANI2xt or AIMNET.
 
@@ -413,11 +413,8 @@ def calc_thermo_xyz(species_coords_list, model_name: str, outpath: str, get_mol_
             calculator.set_charge(charge)
         atoms.set_calculator(calculator)        
 
-        if get_mol_idx_t is None:
-            idx = i
-            T = 298
-        else:
-            idx, T = get_mol_idx_t(mol)
+        idx = i
+        T = temperature
         print(idx)
 
         try:
