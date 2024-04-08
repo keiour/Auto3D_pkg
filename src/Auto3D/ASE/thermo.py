@@ -429,19 +429,19 @@ def calc_thermo_xyz(species_coords_list, model_name: str, outpath: str, get_mol_
                                     enForce_in['charge'])
                     fmax = f_.norm(dim=-1).max(dim=-1)[0].item()
                     assert fmax <= 0.01
-                    mol = do_mol_thermo(mol, atoms, hessian_model, device, T, model_name=model_name)
+                    mol = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
                     out_mols.append(i)
                 except AssertionError:
                     print('optiimize the input geometry')
                     opt = BFGS(atoms)
                     opt.run(fmax=3e-3, steps=opt_steps)
-                    mol = do_mol_thermo(mol, atoms, hessian_model, device, T, model_name=model_name)
+                    mol = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
                     out_mols.append(i)
             except ValueError:
                 print('use tighter convergence threshold for geometry optimization')
                 opt = BFGS(atoms)
                 opt.run(fmax=opt_tol, steps=opt_steps)
-                mol = do_mol_thermo(mol, atoms, hessian_model, device, T, model_name=model_name)
+                mol = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
                 out_mols.append(i)
         except:
             print("Failed: ", idx, flush=True)
