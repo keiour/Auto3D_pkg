@@ -369,7 +369,43 @@ def do_mol_thermo_xyz(species, coord, charge,
     new_coord = atoms.get_positions()
     return (new_coord, result)
 
-def calc_thermo_xyz(species_coords_list, model_name: str, outpath: str, temperature, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+def parse_xyz(xyzname):
+
+    """
+    Parse the coordinates from an xyz file.
+    """
+
+    f = open(xyzname, 'r')
+    text = f.read().split('\n')
+    natoms = int(text[0])
+    text = text[2:2+natoms]
+    atoms, coords_all = [], []
+    for line in text:
+        array = line.split()
+        assert len(array) == 4
+        atom = array[0]
+        coords = np.array([float(array[i]) for i in range(1,4)])
+        atoms.append(atom)
+        coords_all.append(coords)
+    coords_all = np.array(coords_all)
+
+    return atoms, coords_all
+
+def print_xyz(molecule_data, filename):
+    (species, coord, result) = molecule_data
+    molecule_length = len(coord)
+    free_energy = result['G_hartree']
+
+    f = open(filename, "w")
+    f.write(str(molecule_length))
+    f.write(str(free_energy))
+    for j in range(len(species)):
+        output_line_str = species[j] + '\t' + coord[j][0] + '\t' + coord[j][1] +'\t' + coord[j][2]
+        f.write(output_line_str)
+    
+    f.close()
+
+def calc_thermo_scl(species_coords_list, model_name: str, outpath: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
     """
     ASE interface for calculation thermo properties using ANI2x, ANI2xt or AIMNET.
 
@@ -426,35 +462,42 @@ def calc_thermo_xyz(species_coords_list, model_name: str, outpath: str, temperat
                                     enForce_in['charge'])
                     fmax = f_.norm(dim=-1).max(dim=-1)[0].item()
                     assert fmax <= 0.01
-                    mol = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
-                    out_mols.append(i)
+                    (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+                    out_mols.append((species, new_coord, result))
                 except AssertionError:
                     print('optiimize the input geometry')
                     opt = BFGS(atoms)
                     opt.run(fmax=3e-3, steps=opt_steps)
-                    mol = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
-                    out_mols.append(i)
+                    (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+                    out_mols.append((species, new_coord, result))
             except ValueError:
                 print('use tighter convergence threshold for geometry optimization')
                 opt = BFGS(atoms)
                 opt.run(fmax=opt_tol, steps=opt_steps)
-                mol = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
-                out_mols.append(i)
+                (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+                out_mols.append((species, new_coord, result))
         except:
             print("Failed: ", idx, flush=True)
             mols_failed.append(i)
 
     print("Number of failed thermo calculations: ", len(mols_failed), flush=True)
     print("Number of successful thermo calculations: ", len(out_mols), flush=True)
-    with Chem.SDWriter(outpath) as w:
-        all_mols = out_mols + mols_failed
-        for mol_idx in all_mols:
-            w.write(mol_idx)
-    return outpath
+
+    # Print the structure into a xyz file
+    for i in range(len(out_mols)):
+        out_file_path = "output_" + i + ".xyz"
+        print_xyz(out_mols[i], out_file_path)
+
+    return out_mols
+
+def calc_thermo_xyz(input_file_list, model_name: str, output_dir: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+    for input_file in input_file_list:
+        (species, coord) = parse_xyz(input_file)
 
 if __name__ == "__main__":
     # path = '/home/jack/run_auto3d/20231030-101405-214461_methane/imaginary/methane_out.sdf'
-    path = '/home/jack/Auto3D_pkg/tests/files/cyclooctane.sdf'
+    # path = '/home/jack/Auto3D_pkg/tests/files/cyclooctane.sdf'
     # out = calc_thermo(path, 'AIMNET', gpu_idx=1)
-    out = calc_thermo(path, 'ANI2xt', gpu_idx=1)
+    # out = calc_thermo(path, 'ANI2xt', gpu_idx=1)
     # out = calc_thermo(path, 'ANI2x', gpu_idx=1)
+    print("Lorem ipsum")
