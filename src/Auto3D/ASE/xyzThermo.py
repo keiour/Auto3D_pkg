@@ -191,6 +191,32 @@ def parse_xyz(xyzname):
 
     return atoms, coords_all
 
+def parse_xyz_list(xyzname):
+    # The input file should be a list of xyz structured molecules, for example crest_clustered.xyz
+    f = open(xyzname, 'r')
+    text = f.read().split('\n')
+    natoms = int(text[0])
+    xyz_list = []
+
+    total_length = int(len(text))
+    section_length = int(natoms + 2)
+    for i in range(total_length // section_length):
+        begin_line = 2 + i * section_length
+        xyz_section = text[begin_line:begin_line+natoms]
+        atoms, coords_all = [], []
+        for line in xyz_section:
+            array = line.split()
+            assert len(array) == 4
+            atom = array[0]
+            coords = np.array([float(array[i]) for i in range(1,4)])
+            atoms.append(atom)
+            coords_all.append(coords)
+        coords_all = np.array(coords_all)
+
+        xyz_list.append((atoms, coords_all))
+
+    return xyz_list
+
 def print_xyz(molecule_data, filename):
     (species, coord, result) = molecule_data
     molecule_length = len(coord)
@@ -286,10 +312,31 @@ def calc_thermo_scl(species_coords_list, model_name: str, temperature=298.15, gp
 
     return out_mols
 
-def calc_thermo_xyz(input_file_list, model_name: str, output_dir: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+def calc_thermo_filelist(input_file_list, model_name: str, output_dir: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+    # input_file_list should supply a list of xyz files, one xyz structure in each file.
     input_data_list = []
     for input_file in input_file_list:
         (species, coord) = parse_xyz(input_file)
+        charge = 0
+        input_data_list.append((species, coord, charge))
+
+    # Do the computation
+    out_mols = calc_thermo_scl(input_data_list, model_name, temperature, gpu_idx, opt_tol, opt_steps)
+
+    # Check if the directory exists. If it does not exist, create it
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    # Output to result xyz files
+    for i in range(len(out_mols)):
+        out_file_path = os.path.join(output_dir, "output_" + str(i) + ".xyz")
+        print_xyz(out_mols[i], out_file_path)
+
+def calc_thermo_clustered(input_file: str, model_name: str, output_dir: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+    # input file should supply a concartenation of xyz files, like crest_clustered.xyz
+    input_data_list_tmp = parse_xyz_list(input_file)
+    input_data_list = []
+    for (species, coord) in input_data_list_tmp:
         charge = 0
         input_data_list.append((species, coord, charge))
 
