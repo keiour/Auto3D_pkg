@@ -139,6 +139,8 @@ def vib_hessian_xyz(species, coord, charge, ase_calculator, model,
     vib = VibrationsData(atoms, hess)
     return vib
 
+# This function relies on using gitlab sourced ASE implementation
+# conda version does not work due to lack of ignore_imag_modes option
 def do_mol_thermo_xyz(species, coord, charge,
                       atoms: ase.Atoms,
                       model: torch.nn.Module,
@@ -153,7 +155,8 @@ def do_mol_thermo_xyz(species, coord, charge,
                             potentialenergy=e,
                             atoms=atoms,
                             geometry='nonlinear',
-                            symmetrynumber=1, spin=0)
+                            symmetrynumber=1, spin=0, natoms=None,
+                            ignore_imag_modes=True) # ignore_imag_modes avoid optimization failures due to imaginary frequencies being supplied
     H = thermo.get_enthalpy(temperature=T) * ev2hatree
     S = thermo.get_entropy(temperature=T, pressure=101325) * ev2hatree
     G = thermo.get_gibbs_energy(temperature=T, pressure=101325) * ev2hatree
@@ -280,32 +283,32 @@ def calc_thermo_scl(species_coords_list, model_name: str, temperature=298.15, gp
         T = temperature
         print(idx)
 
+        # try:
         try:
             try:
-                try:
-                    enForce_in = xyz2aimnet_input(species, coord, charge, device, model_name=model_name)
-                    _, f_ = model(enForce_in['coord'].requires_grad_(True),
-                                    enForce_in['numbers'],
-                                    enForce_in['charge'])
-                    fmax = f_.norm(dim=-1).max(dim=-1)[0].item()
-                    assert fmax <= 0.01
-                    (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
-                    out_mols.append((species, new_coord, result))
-                except AssertionError:
-                    print('optiimize the input geometry')
-                    opt = BFGS(atoms)
-                    opt.run(fmax=3e-3, steps=opt_steps)
-                    (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
-                    out_mols.append((species, new_coord, result))
-            except ValueError:
-                print('use tighter convergence threshold for geometry optimization')
-                opt = BFGS(atoms)
-                opt.run(fmax=opt_tol, steps=opt_steps)
+                enForce_in = xyz2aimnet_input(species, coord, charge, device, model_name=model_name)
+                _, f_ = model(enForce_in['coord'].requires_grad_(True),
+                                enForce_in['numbers'],
+                                enForce_in['charge'])
+                fmax = f_.norm(dim=-1).max(dim=-1)[0].item()
+                assert fmax <= 3e-3
                 (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
                 out_mols.append((species, new_coord, result))
-        except:
-            print("Failed: ", idx, flush=True)
-            mols_failed.append(i)
+            except AssertionError:
+                print('optiimize the input geometry')
+                opt = BFGS(atoms)
+                opt.run(fmax=3e-3, steps=opt_steps)
+                (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+                out_mols.append((species, new_coord, result))
+        except ValueError:
+            print('use tighter convergence threshold for geometry optimization')
+            opt = BFGS(atoms)
+            opt.run(fmax=opt_tol, steps=opt_steps)
+            (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+            out_mols.append((species, new_coord, result))
+        # except:
+        #     print("Failed: ", idx, flush=True)
+        #     mols_failed.append(i)
 
     print("Number of failed thermo calculations: ", len(mols_failed), flush=True)
     print("Number of successful thermo calculations: ", len(out_mols), flush=True)
@@ -332,7 +335,7 @@ def calc_thermo_filelist(input_file_list, model_name: str, output_dir: str, temp
         out_file_path = os.path.join(output_dir, "output_" + str(i) + ".xyz")
         print_xyz(out_mols[i], out_file_path)
 
-def calc_thermo_clustered(input_file: str, model_name: str, output_dir: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+def calc_thermo_clustered(input_file: str, model_name: str, output_dir: str, output_file_basename: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
     # input file should supply a concartenation of xyz files, like crest_clustered.xyz
     input_data_list_tmp = parse_xyz_list(input_file)
     input_data_list = []
@@ -349,7 +352,7 @@ def calc_thermo_clustered(input_file: str, model_name: str, output_dir: str, tem
 
     # Output to result xyz files
     for i in range(len(out_mols)):
-        out_file_path = os.path.join(output_dir, "output_" + str(i) + ".xyz")
+        out_file_path = os.path.join(output_dir, output_file_basename + "_" + str(i) + ".xyz")
         print_xyz(out_mols[i], out_file_path)
 
 if __name__ == "__main__":
