@@ -235,10 +235,12 @@ def print_xyz(molecule_data, filename):
     
     f.close()
 
-def calc_thermo_scl(species_coords_list, model_name: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+def calc_thermo_scl(species_coords_list_list, model_name: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
     """
     ASE interface for calculation thermo properties using ANI2x, ANI2xt or AIMNET.
 
+    :param species_coords_list_list: A list of list for input structures, each structure fed from a parser in (species, coords, charge) format
+    :type species_coords_list_list: list list
     :param path: Input sdf file
     :type path: str
     :param model_name: ANI2x, ANI2xt or AIMNET
@@ -253,7 +255,7 @@ def calc_thermo_scl(species_coords_list, model_name: str, temperature=298.15, gp
     :type opt_steps: int, optional
     """
     #Prepare output name
-    out_mols, mols_failed = [], []
+    out_mols_list, mols_failed = [], []
 
     if torch.cuda.is_available():
         device = torch.device(f"cuda:{gpu_idx}")
@@ -270,50 +272,49 @@ def calc_thermo_scl(species_coords_list, model_name: str, temperature=298.15, gp
         hessian_model = torchani.models.ANI2x(periodic_table_index=True).to(device).double()
     model, calculator = model_name2model_calculator(model_name, device)
 
-    total_molecule_count = len(species_coords_list)
-    for i in tqdm(range(total_molecule_count)):
-        (species, coord, charge) = species_coords_list[i]
-        atoms = Atoms(species, coord)
+    for species_coords_list in species_coords_list_list:
+        out_mols = []
+        total_molecule_count = len(species_coords_list)
+        for i in tqdm(range(total_molecule_count)):
+            (species, coord, charge) = species_coords_list[i]
+            atoms = Atoms(species, coord)
 
-        if model_name == 'AIMNET':
-            calculator.set_charge(charge)
-        atoms.set_calculator(calculator)        
+            if model_name == 'AIMNET':
+                calculator.set_charge(charge)
+            atoms.set_calculator(calculator)        
 
-        idx = i
-        T = temperature
-        print(idx)
+            idx = i
+            T = temperature
+            print(idx)
 
-        # try:
-        try:
             try:
-                enForce_in = xyz2aimnet_input(species, coord, charge, device, model_name=model_name)
-                _, f_ = model(enForce_in['coord'].requires_grad_(True),
-                                enForce_in['numbers'],
-                                enForce_in['charge'])
-                fmax = f_.norm(dim=-1).max(dim=-1)[0].item()
-                assert fmax <= 3e-3
-                (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
-                out_mols.append((species, new_coord, result))
-            except AssertionError:
-                print('optiimize the input geometry')
+                try:
+                    enForce_in = xyz2aimnet_input(species, coord, charge, device, model_name=model_name)
+                    _, f_ = model(enForce_in['coord'].requires_grad_(True),
+                                    enForce_in['numbers'],
+                                    enForce_in['charge'])
+                    fmax = f_.norm(dim=-1).max(dim=-1)[0].item()
+                    assert fmax <= 3e-3
+                    (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+                    out_mols.append((species, new_coord, result))
+                except AssertionError:
+                    print('optiimize the input geometry')
+                    opt = BFGS(atoms)
+                    opt.run(fmax=3e-3, steps=opt_steps)
+                    (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+                    out_mols.append((species, new_coord, result))
+            except ValueError:
+                print('use tighter convergence threshold for geometry optimization')
                 opt = BFGS(atoms)
-                opt.run(fmax=3e-3, steps=opt_steps)
+                opt.run(fmax=opt_tol, steps=opt_steps)
                 (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
                 out_mols.append((species, new_coord, result))
-        except ValueError:
-            print('use tighter convergence threshold for geometry optimization')
-            opt = BFGS(atoms)
-            opt.run(fmax=opt_tol, steps=opt_steps)
-            (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
-            out_mols.append((species, new_coord, result))
-        # except:
-        #     print("Failed: ", idx, flush=True)
-        #     mols_failed.append(i)
+        
+        print("Number of successful thermo calculations: ", len(out_mols), flush=True)
+        out_mols_list.append(out_mols)
 
-    print("Number of failed thermo calculations: ", len(mols_failed), flush=True)
-    print("Number of successful thermo calculations: ", len(out_mols), flush=True)
 
-    return out_mols
+    return out_mols_list
 
 def calc_thermo_filelist(input_file_list, model_name: str, output_dir: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
     # input_file_list should supply a list of xyz files, one xyz structure in each file.
@@ -321,7 +322,7 @@ def calc_thermo_filelist(input_file_list, model_name: str, output_dir: str, temp
     for input_file in input_file_list:
         (species, coord) = parse_xyz(input_file)
         charge = 0
-        input_data_list.append((species, coord, charge))
+        input_data_list.append([(species, coord, charge)])
 
     # Do the computation
     out_mols = calc_thermo_scl(input_data_list, model_name, temperature, gpu_idx, opt_tol, opt_steps)
@@ -344,16 +345,49 @@ def calc_thermo_clustered(input_file: str, model_name: str, output_dir: str, out
         input_data_list.append((species, coord, charge))
 
     # Do the computation
-    out_mols = calc_thermo_scl(input_data_list, model_name, temperature, gpu_idx, opt_tol, opt_steps)
+    out_mols_list = calc_thermo_scl([input_data_list], model_name, temperature, gpu_idx, opt_tol, opt_steps)
 
     # Check if the directory exists. If it does not exist, create it
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     # Output to result xyz files
+    out_mols = out_mols_list[0]
     for i in range(len(out_mols)):
         out_file_path = os.path.join(output_dir, output_file_basename + "_" + str(i) + ".xyz")
         print_xyz(out_mols[i], out_file_path)
+
+def calc_thermo_crest_clustered_in_directory(input_base_directory: str, model_name: str, output_dir: str, temperature=298.15, gpu_idx=0, opt_tol=0.0002, opt_steps=5000):
+    # input_base_directory is the directory, such that it contains "name_of_structure"/crest_clustered.xyz
+    clustered_file_name = 'crest_clustered.xyz'
+    input_dir_list = []
+    input_data_list_list = []
+    for this_dir in os.scandir(input_base_directory):
+        if os.path.isdir(this_dir):
+            dir_name = this_dir.name
+            print('Adding: ' + dir_name + ' to the run list')
+            input_file = os.path.join(input_base_directory, dir_name, clustered_file_name)
+            input_data_list_tmp = parse_xyz_list(input_file)
+            input_data_list = []
+
+            for (species, coord) in input_data_list_tmp:
+                charge = 0
+                input_data_list.append((species, coord, charge))
+
+            input_dir_list.append(dir_name)
+            input_data_list_list.append(input_data_list)
+
+    # Do the computation
+    out_mols_list = calc_thermo_scl(input_data_list_list, model_name, temperature, gpu_idx, opt_tol, opt_steps)
+
+    # Output to result xyz files
+    for (output_file_basename, out_mols) in zip(input_dir_list, out_mols_list):
+        # Check if the directory exists. If it does not exist, create it
+        if not os.path.exists(os.path.join(output_dir, output_file_basename)):
+            os.makedirs(os.path.join(output_dir, output_file_basename))
+        for i in range(len(out_mols)):
+            out_file_path = os.path.join(output_dir, output_file_basename, output_file_basename + "_" + str(i) + ".xyz")
+            print_xyz(out_mols[i], out_file_path)
 
 if __name__ == "__main__":
     # path = '/home/jack/run_auto3d/20231030-101405-214461_methane/imaginary/methane_out.sdf'
