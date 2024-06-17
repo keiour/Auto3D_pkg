@@ -115,9 +115,17 @@ def vib_hessian_xyz(species, coord, charge, ase_calculator, model,
                     device=torch.device('cpu'), model_name='AIMNET'):
     '''return a VibrationsData object
     model: ANI2xt or AIMNet2 or ANI2x that can be used to calculate Hessian'''
+
+    import time
+
+    t0 = time.time()
+
     # get the ASE atoms object
     atoms = Atoms(species, coord)
     atoms.set_calculator(ase_calculator)
+
+    t1 = time.time()
+    
 
     # get the Hessian
     aimnet_input = xyz2aimnet_input(species, coord, charge, device, model_name=model_name)
@@ -126,17 +134,33 @@ def vib_hessian_xyz(species, coord, charge, ase_calculator, model,
     numbers = aimnet_input['numbers']
     charge = aimnet_input['charge']
 
+    t2 = time.time()
+
+
     hess_helper = partial(aimnet_hessian_helper,
                           numbers=numbers,
                           charge=charge,
                           model=model,
                           model_name=model_name)
+
+    t2a = time.time()
+
     hess = torch.autograd.functional.hessian(hess_helper,
                                              coord)
+
+    t2b = time.time()
+
     hess = hess.detach().cpu().view(num_atoms, 3, num_atoms, 3).numpy()  
+
+    t3 = time.time()
+    
 
     # get the VibrationsData object
     vib = VibrationsData(atoms, hess)
+
+    t4 = time.time()
+    print("vib_hessian_xyz time: ", t2 - t0, "|", t2a - t2, "|", t2b - t2a, "|", t3 - t2b)
+
     return vib
 
 # This function relies on using gitlab sourced ASE implementation
@@ -148,19 +172,35 @@ def do_mol_thermo_xyz(species, coord, charge,
                       T=298.0, model_name='AIMNET'):
     """For a RDKit mol object, calculate its thermochemistry properties.
     model: ANI2xt or AIMNet2 or ANI2x that can be used to calculate Hessian"""
+
+    import time
+
+    t0 = time.time()
+
     vib = vib_hessian_xyz(species, coord, charge, atoms.get_calculator(), model, device, model_name=model_name)
     vib_e = vib.get_energies()
+
+    t1 = time.time()
+    
     e = atoms.get_potential_energy()
+
+    t2 = time.time()
+
     thermo = IdealGasThermo(vib_energies=vib_e,
                             potentialenergy=e,
                             atoms=atoms,
                             geometry='nonlinear',
                             symmetrynumber=1, spin=0, natoms=None,
                             ignore_imag_modes=True) # ignore_imag_modes avoid optimization failures due to imaginary frequencies being supplied
+    
+    t3 = time.time()
+    
     H = thermo.get_enthalpy(temperature=T) * ev2hatree
     S = thermo.get_entropy(temperature=T, pressure=101325) * ev2hatree
     G = thermo.get_gibbs_energy(temperature=T, pressure=101325) * ev2hatree
     
+    t4 = time.time()
+
     result = {}
     result["H_hartree"] = str(H)
     result["S_hartree"] = str(S)
@@ -170,6 +210,10 @@ def do_mol_thermo_xyz(species, coord, charge,
     
     #Updating ASE atoms coordinates
     new_coord = atoms.get_positions()
+
+    t5 = time.time()
+
+    # print("do_mol_thermo_xyz time: ", t1 - t0, "|", t2 - t1, "|", t3 - t2, "|", t4 - t3, "|", t5 - t4)
     return (new_coord, result)
 
 def parse_xyz(xyzname):
@@ -272,6 +316,11 @@ def calc_thermo_scl(species_coords_list_list, model_name: str, temperature=298.1
         hessian_model = torchani.models.ANI2x(periodic_table_index=True).to(device).double()
     model, calculator = model_name2model_calculator(model_name, device)
 
+    import time
+    total_pre_opt_time = 0
+    total_opt_time = 0
+    total_misc_time = 0
+
     for species_coords_list in species_coords_list_list:
         out_mols = []
         total_molecule_count = len(species_coords_list)
@@ -288,6 +337,9 @@ def calc_thermo_scl(species_coords_list_list, model_name: str, temperature=298.1
             print(idx)
 
             try:
+
+                t0 = time.time()
+
                 try:
                     enForce_in = xyz2aimnet_input(species, coord, charge, device, model_name=model_name)
                     _, f_ = model(enForce_in['coord'].requires_grad_(True),
@@ -300,9 +352,24 @@ def calc_thermo_scl(species_coords_list_list, model_name: str, temperature=298.1
                 except AssertionError:
                     print('optiimize the input geometry')
                     opt = BFGS(atoms)
+
+                    t1 = time.time()
+
                     opt.run(fmax=3e-3, steps=opt_steps)
+
+                    t2 = time.time()
+
                     (new_coord, result) = do_mol_thermo_xyz(species, coord, charge, atoms, hessian_model, device, T, model_name=model_name)
+
+                    t3 = time.time()
+
                     out_mols.append((species, new_coord, result))
+
+                    # print("Optimize time: ", t1 - t0, "|", t2 - t1, "|", t3 - t2, "|")
+                    total_pre_opt_time += t1 - t0
+                    total_opt_time += t2 - t1
+                    total_misc_time += t3 - t2
+
             except ValueError:
                 print('use tighter convergence threshold for geometry optimization')
                 opt = BFGS(atoms)
@@ -311,6 +378,10 @@ def calc_thermo_scl(species_coords_list_list, model_name: str, temperature=298.1
                 out_mols.append((species, new_coord, result))
         
         print("Number of successful thermo calculations: ", len(out_mols), flush=True)
+
+
+        print("Total optimize time: ", total_pre_opt_time, "|", total_opt_time, "|", total_misc_time, "|")
+
         out_mols_list.append(out_mols)
 
 
